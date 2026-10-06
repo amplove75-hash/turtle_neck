@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>거북목 탐지기</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap">
+<style>
+  /* 레이아웃: 왼쪽에 카메라, 오른쪽에 판정·수치·설정 패널. 좁으면 한 줄로 쌓임 */
+  :root {
+    --bg: #eef3f1; --panel: #ffffff; --ink: #14241f; --muted: #5d706a; --line: #d5dfdb;
+    --accent: #0f6e5c;
+    --good: #1a8a5a; --warn: #c07a00; --bad: #c8372d; --idle: #6b7c77;
+    --font: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1715; --panel: #18231f; --ink: #e6efec; --muted: #94a8a1; --line: #2a3a35;
+      --accent: #4fc3a8;
+      --good: #3fcf8e; --warn: #f0b03c; --bad: #ff6b5e; --idle: #8a9c96;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 15px; line-height: 1.55; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 16px 40px; display: flex; flex-direction: column; gap: 20px; }
+  header h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
+  header p { margin: 4px 0 0; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+
+  .stage { position: relative; background: #0b1210; border-radius: 14px; overflow: hidden; aspect-ratio: 4 / 3; max-width: 100%; }
+  .stage video, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; color: #e6efec; background: rgba(11,18,16,.82); }
+  .overlay p { margin: 0; max-width: 34ch; }
+  .countdown { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; color: #fff; background: rgba(15,110,92,.55); }
+
+  .side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .verdict { border-radius: 14px; padding: 20px; color: #fff; background: var(--state, var(--idle)); transition: background .25s; }
+  .verdict .label { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+  .verdict .hint { margin-top: 6px; opacity: .92; }
+  @media (prefers-color-scheme: dark) { .verdict { color: #0b1210; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+  .panel h2 { margin: 0; font-size: 13px; font-weight: 700; color: var(--muted); letter-spacing: .04em; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .row .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .meter { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--state, var(--idle)); transition: width .2s, background .25s; }
+  .split { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); }
+  .split i { display: block; height: 100%; }
+  .split .g { background: var(--good); } .split .b { background: var(--bad); }
+
+  button { font: inherit; font-weight: 700; border: 0; border-radius: 10px; padding: 11px 16px; cursor: pointer; background: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { button { color: #0b1210; } }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+  label.opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+  .small { font-size: 13px; color: var(--muted); margin: 0; }
+  .err { color: var(--bad); font-weight: 500; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>거북목 탐지기</h1>
+    <p>카메라로 귀와 어깨 위치를 읽어, 저장해 둔 바른 자세와 비교합니다. 영상은 이 컴퓨터 밖으로 나가지 않아요.</p>
+  </header>
+
+  <div class="grid">
+    <div class="stage">
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas"></canvas>
+      <div class="countdown" id="countdown" hidden></div>
+      <div class="overlay" id="overlay">
+        <p id="overlayMsg">노트북 카메라를 켜고 상체(머리와 양쪽 어깨)가 보이게 앉아 주세요.</p>
+        <button id="startBtn">카메라 시작</button>
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="verdict" id="verdict">
+        <div class="label" id="vLabel">대기 중</div>
+        <div class="hint" id="vHint">카메라를 시작해 주세요.</div>
+      </div>
+
+      <div class="panel" id="scorePanel">
+        <h2>지금 자세</h2>
+        <div class="row"><span>자세 점수</span><span class="v" id="score">–</span></div>
+        <div class="meter"><i id="scoreBar"></i></div>
+        <div class="row"><span>목 길이 (귀–어깨 높이)</span><span class="v" id="mNeck">–</span></div>
+        <div class="row"><span>얼굴 크기 (카메라와 거리)</span><span class="v" id="mFace">–</span></div>
+        <p class="small">기준 자세 대비 변화율입니다. 목 길이가 줄거나 얼굴이 커지면 머리가 앞으로 나온 것입니다.</p>
+      </div>
+
+      <div class="panel">
+        <h2>바른 자세 기준</h2>
+        <p class="small" id="calibState">아직 저장된 기준이 없어요. 허리를 펴고 턱을 살짝 당긴 뒤 저장하세요.</p>
+        <div class="btns">
+          <button id="calibBtn" disabled>지금 자세를 기준으로 저장</button>
+          <button id="resetBtn" class="ghost" disabled>기준 지우기</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>이번 사용 기록</h2>
+        <div class="row"><span>바른 자세</span><span class="v" id="tGood">0:00</span></div>
+        <div class="row"><span>거북목</span><span class="v" id="tBad">0:00</span></div>
+        <div class="split"><i class="g" id="sGood"></i><i class="b" id="sBad"></i></div>
+      </div>
+
+      <div class="panel">
+        <h2>설정</h2>
+        <label for="sens">민감도 <span class="small" id="sensLabel">보통</span></label>
+        <input type="range" id="sens" min="1" max="5" step="1" value="3">
+        <label class="opt" for="beep">거북목이 5초 넘게 이어지면 소리로 알림 <input type="checkbox" id="beep" checked></label>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d");
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// 민감도 1(둔감)~5(민감) → 거북목으로 판정하는 변화율 기준
+const THRESHOLDS = { 1: 0.22, 2: 0.17, 3: 0.13, 4: 0.10, 5: 0.07 };
+const SENS_NAMES = { 1: "매우 둔감", 2: "둔감", 3: "보통", 4: "민감", 5: "매우 민감" };
+const ALERT_AFTER_MS = 5000;
+
+let landmarker = null, baseline = null, smooth = null;
+let calib = null;              // 기준 저장 중일 때 { until, samples }
+let badSince = null, lastBeep = 0, audioCtx = null;
+let goodMs = 0, badMs = 0, lastTick = null, lastVideoTime = -1;
+
+try { baseline = JSON.parse(localStorage.getItem("turtleBaseline")); } catch (e) {}
+
+function setVerdict(state, label, hint) {
+  const color = { good: "--good", warn: "--warn", bad: "--bad", idle: "--idle" }[state];
+  $("verdict").style.setProperty("--state", `var(${color})`);
+  $("scorePanel").style.setProperty("--state", `var(${color})`);
+  $("vLabel").textContent = label;
+  $("vHint").textContent = hint;
+}
+function fmt(ms) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+function pct(x) { return (x >= 0 ? "+" : "") + Math.round(x * 100) + "%"; }
+
+function updateCalibUI() {
+  $("calibState").textContent = baseline
+    ? "기준이 저장되어 있어요. 자리나 카메라 각도가 바뀌면 다시 저장하세요."
+    : "아직 저장된 기준이 없어요. 허리를 펴고 턱을 살짝 당긴 뒤 저장하세요.";
+  $("resetBtn").disabled = !baseline;
+}
+
+// 귀·어깨 좌표 → 어깨너비로 나눈 두 가지 비율
+function measure(lm) {
+  const [earL, earR, shL, shR] = [lm[7], lm[8], lm[11], lm[12]];
+  if ([earL, earR, shL, shR].some(p => (p.visibility ?? 1) < 0.5)) return null;
+  const ar = canvas.width / canvas.height;               // x를 y와 같은 단위로
+  const dist = (a, b) => Math.hypot((a.x - b.x) * ar, a.y - b.y);
+  const sw = dist(shL, shR);
+  if (sw < 0.08) return null;
+  return {
+    neck: ((shL.y + shR.y) / 2 - (earL.y + earR.y) / 2) / sw, // 작아지면 머리가 내려앉음
+    face: dist(earL, earR) / sw,                               // 커지면 머리가 카메라 쪽으로
+  };
+}
+
+function draw(lm, state) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!lm) return;
+  const W = canvas.width, H = canvas.height;
+  const p = i => [lm[i].x * W, lm[i].y * H];
+  const color = css({ good: "--good", warn: "--warn", bad: "--bad", idle: "--idle" }[state]);
+  const earMid = [(p(7)[0] + p(8)[0]) / 2, (p(7)[1] + p(8)[1]) / 2];
+  const shMid = [(p(11)[0] + p(12)[0]) / 2, (p(11)[1] + p(12)[1]) / 2];
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = Math.max(3, W / 200); ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(...p(11)); ctx.lineTo(...p(12)); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(...shMid); ctx.lineTo(...earMid); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(...p(7)); ctx.lineTo(...p(8)); ctx.stroke();
+  for (const i of [7, 8, 11, 12]) { ctx.beginPath(); ctx.arc(...p(i), Math.max(5, W / 110), 0, Math.PI * 2); ctx.fill(); }
+}
+
+function beep() {
+  if (!$("beep").checked || !audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.frequency.value = 660; o.connect(g); g.connect(audioCtx.destination);
+  g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.2, audioCtx.currentTime + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.35);
+  o.start(); o.stop(audioCtx.currentTime + 0.4);
+}
+
+function clearReadout() {
+  $("score").textContent = "–"; $("scoreBar").style.width = "0";
+  $("mNeck").textContent = "–"; $("mFace").textContent = "–";
+}
+
+function tick() {
+  requestAnimationFrame(tick);
+  if (!landmarker || video.readyState < 2 || video.currentTime === lastVideoTime) return;
+  lastVideoTime = video.currentTime;
+  const now = performance.now();
+  const dt = lastTick ? Math.min(now - lastTick, 500) : 0; lastTick = now;
+
+  const lm = landmarker.detectForVideo(video, now).landmarks[0];
+  const m = lm ? measure(lm) : null;
+  if (!m) {
+    smooth = null; badSince = null; draw(null); clearReadout();
+    setVerdict("idle", "사람이 안 보여요", "머리와 양쪽 어깨가 화면에 들어오게 앉아 주세요.");
+    return;
+  }
+  // 떨림을 줄이기 위한 이동 평균
+  smooth = smooth ? { neck: smooth.neck * 0.8 + m.neck * 0.2, face: smooth.face * 0.8 + m.face * 0.2 } : m;
+
+  if (calib) {
+    calib.samples.push(m);
+    const left = Math.ceil((calib.until - now) / 1000);
+    $("countdown").textContent = `바른 자세를 유지하세요… ${Math.max(left, 1)}`;
+    draw(lm, "idle");
+    if (now >= calib.until) {
+      const n = calib.samples.length;
+      baseline = { neck: calib.samples.reduce((s, x) => s + x.neck, 0) / n, face: calib.samples.reduce((s, x) => s + x.face, 0) / n };
+      try { localStorage.setItem("turtleBaseline", JSON.stringify(baseline)); } catch (e) {}
+      calib = null; $("countdown").hidden = true; $("calibBtn").disabled = false; updateCalibUI();
+    }
+    return;
+  }
+
+  if (!baseline) {
+    draw(lm, "idle"); clearReadout();
+    setVerdict("idle", "기준이 필요해요", "바른 자세로 앉아 '지금 자세를 기준으로 저장'을 눌러 주세요.");
+    return;
+  }
+
+  const neckChange = (smooth.neck - baseline.neck) / baseline.neck;   // 음수 = 목이 짧아짐
+  const faceChange = (smooth.face - baseline.face) / baseline.face;   // 양수 = 얼굴이 커짐
+  const deviation = Math.max(-neckChange, 0) + Math.max(faceChange, 0) * 0.8;
+  const T = THRESHOLDS[$("sens").value];
+  const score = Math.max(0, Math.round(100 - (deviation / T) * 50));  // 기준선에서 50점
+
+  let state;
+  if (deviation >= T) state = "bad"; else if (deviation >= T * 0.55) state = "warn"; else state = "good";
+
+  if (state === "bad") {
+    badMs += dt; badSince ??= now;
+    setVerdict("bad", "거북목 자세", "머리가 앞으로 나왔어요. 턱을 당기고 귀를 어깨 위로 올려 주세요.");
+    if (now - badSince > ALERT_AFTER_MS && now - lastBeep > ALERT_AFTER_MS) { beep(); lastBeep = now; }
+  } else {
+    badSince = null; goodMs += dt;
+    if (state === "warn") setVerdict("warn", "조금 흐트러졌어요", "머리가 앞으로 나오기 시작했어요.");
+    else setVerdict("good", "바른 자세", "좋아요. 이대로 유지하세요.");
+  }
+
+  draw(lm, state);
+  $("score").textContent = score + "점"; $("scoreBar").style.width = score + "%";
+  $("mNeck").textContent = pct(neckChange); $("mFace").textContent = pct(faceChange);
+  $("tGood").textContent = fmt(goodMs); $("tBad").textContent = fmt(badMs);
+  const total = goodMs + badMs || 1;
+  $("sGood").style.width = (goodMs / total * 100) + "%"; $("sBad").style.width = (badMs / total * 100) + "%";
+}
+
+$("startBtn").addEventListener("click", async () => {
+  const msg = $("overlayMsg"); msg.classList.remove("err");
+  $("startBtn").disabled = true;
+  try {
+    audioCtx ??= new (window.AudioContext || window.webkitAudioContext)();
+    msg.textContent = "카메라를 켜는 중…";
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: false });
+    video.srcObject = stream; await video.play();
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    msg.textContent = "자세 인식 모델을 불러오는 중… (처음엔 몇 초 걸려요)";
+    const fileset = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+    const opts = d => ({ baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", delegate: d }, runningMode: "VIDEO", numPoses: 1 });
+    try { landmarker = await PoseLandmarker.createFromOptions(fileset, opts("GPU")); }
+    catch (e) { landmarker = await PoseLandmarker.createFromOptions(fileset, opts("CPU")); }
+    $("overlay").hidden = true; $("calibBtn").disabled = false; updateCalibUI();
+    requestAnimationFrame(tick);
+  } catch (e) {
+    console.error(e);
+    msg.classList.add("err");
+    msg.textContent = e.name === "NotAllowedError" ? "카메라 사용이 거부됐어요. 주소창의 카메라 아이콘에서 허용한 뒤 다시 눌러 주세요."
+      : e.name === "NotFoundError" ? "카메라를 찾지 못했어요. 연결 상태를 확인해 주세요."
+      : "시작하지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요. (" + e.message + ")";
+    $("startBtn").disabled = false;
+  }
+});
+
+$("calibBtn").addEventListener("click", () => {
+  calib = { until: performance.now() + 3000, samples: [] };
+  $("calibBtn").disabled = true; $("countdown").hidden = false;
+  setVerdict("idle", "기준 저장 중", "허리를 펴고 정면을 본 채로 3초만 유지하세요.");
+});
+$("resetBtn").addEventListener("click", () => {
+  baseline = null; try { localStorage.removeItem("turtleBaseline"); } catch (e) {}
+  updateCalibUI();
+});
+$("sens").addEventListener("input", e => { $("sensLabel").textContent = SENS_NAMES[e.target.value]; });
+updateCalibUI();
+</script>
+</body>
+</html>
